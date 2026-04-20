@@ -1,0 +1,28 @@
+{
+  "name": "dalpras/payment-nexi",
+  "description": "Nexi XPay connector for dalpras/payment-core.",
+  "type": "library",
+  "license": "MIT",
+  "require": {
+    "php": "^8.2",
+    "dalpras/payment-core": "dev-main",
+    "psr/http-client": "^1.0",
+    "psr/http-factory": "^1.1",
+    "psr/http-message": "^2.0"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^10.0"
+  },
+  "autoload": {
+    "psr-4": {
+      "DalPraS\\Payment\\Nexi\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "DalPraS\\Payment\\Nexi\\Tests\\": "tests/"
+    }
+  },
+  "minimum-stability": "stable",
+  "prefer-stable": true
+}
