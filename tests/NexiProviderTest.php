@@ -51,14 +51,14 @@ final class NexiProviderTest extends TestCase
     public function testMapperUsesExplicitCaptureForDeferredCaptureIntents(): void
     {
         $mapper = new NexiOrderMapper();
-        $request = $this->checkoutRequest(PaymentIntent::CAPTURE_LATER);
+        $request = $this->checkoutRequest(PaymentIntent::CaptureLater);
         $payload = $mapper->mapCreateHostedPaymentPayload($request);
 
         self::assertSame('EXPLICIT', $payload['captureType']);
         self::assertSame('ita', $payload['language']);
     }
 
-    private function checkoutRequest(PaymentIntent $intent = PaymentIntent::SALE): CheckoutRequest
+    private function checkoutRequest(PaymentIntent $intent = PaymentIntent::Sale): CheckoutRequest
     {
         $currency = Currency::EUR;
 

@@ -74,8 +74,8 @@ final class NexiOrderMapper
     private function mapCaptureType(PaymentIntent $intent): string
     {
         return match ($intent) {
-            PaymentIntent::SALE => 'IMPLICIT',
-            PaymentIntent::AUTHORIZE, PaymentIntent::CAPTURE_LATER => 'EXPLICIT',
+            PaymentIntent::Sale => 'IMPLICIT',
+            PaymentIntent::Authorize, PaymentIntent::CaptureLater => 'EXPLICIT',
         };
     }
 
