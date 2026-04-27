@@ -60,7 +60,7 @@ final class NexiProviderTest extends TestCase
 
     private function checkoutRequest(PaymentIntent $intent = PaymentIntent::Sale): CheckoutRequest
     {
-        $currency = Currency::EUR;
+        $currency = Currency::Eur;
 
         return new CheckoutRequest(
             providerCode: 'nexi',
