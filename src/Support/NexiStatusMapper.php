@@ -14,37 +14,37 @@ final class NexiStatusMapper
 
         if (in_array($operationResult, ['EXECUTED', 'SUCCESS', 'OK'], true)) {
             return match ($operationType) {
-                'AUTHORIZATION' => PaymentStatus::AUTHORIZED,
-                'CAPTURE', 'PAYMENT' => PaymentStatus::CAPTURED,
-                'REFUND' => PaymentStatus::REFUNDED,
-                'CANCEL', 'VOID' => PaymentStatus::CANCELLED,
-                default => PaymentStatus::CAPTURED,
+                'AUTHORIZATION' => PaymentStatus::Authorized,
+                'CAPTURE', 'PAYMENT' => PaymentStatus::Captured,
+                'REFUND' => PaymentStatus::Refunded,
+                'CANCEL', 'VOID' => PaymentStatus::Cancelled,
+                default => PaymentStatus::Captured,
             };
         }
 
         if (in_array($status, ['PENDING', 'CREATED', 'IN_PROGRESS'], true)) {
-            return PaymentStatus::PENDING_CUSTOMER_ACTION;
+            return PaymentStatus::PendingCustomerAction;
         }
 
         if (in_array($operationResult, ['DECLINED', 'DENIED', 'FAILED', 'ERROR'], true)) {
-            return PaymentStatus::FAILED;
+            return PaymentStatus::Failed;
         }
 
         if (in_array($status, ['CANCELLED', 'VOIDED'], true)) {
-            return PaymentStatus::CANCELLED;
+            return PaymentStatus::Cancelled;
         }
 
-        return PaymentStatus::UNKNOWN;
+        return PaymentStatus::Unknown;
     }
 
     public static function fromNotificationType(?string $eventType): PaymentStatus
     {
         return match (strtoupper((string) $eventType)) {
-            'AUTHORIZATION' => PaymentStatus::AUTHORIZED,
-            'CAPTURE', 'PAYMENT' => PaymentStatus::CAPTURED,
-            'REFUND' => PaymentStatus::REFUNDED,
-            'CANCEL', 'VOID' => PaymentStatus::CANCELLED,
-            default => PaymentStatus::UNKNOWN,
+            'AUTHORIZATION' => PaymentStatus::Authorized,
+            'CAPTURE', 'PAYMENT' => PaymentStatus::Captured,
+            'REFUND' => PaymentStatus::Refunded,
+            'CANCEL', 'VOID' => PaymentStatus::Cancelled,
+            default => PaymentStatus::Unknown,
         };
     }
 }

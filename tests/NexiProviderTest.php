@@ -39,7 +39,7 @@ final class NexiProviderTest extends TestCase
         self::assertSame('https://xpaysandbox.nexigroup.com/checkout/session-123', $response->redirectUrl);
         self::assertSame('merchant-1', $response->providerPaymentId);
         self::assertSame('sec-123', $response->providerToken);
-        self::assertSame(PaymentStatus::PENDING_CUSTOMER_ACTION, $response->status);
+        self::assertSame(PaymentStatus::PendingCustomerAction, $response->status);
         self::assertSame('corr-1', $client->lastCreateCorrelationId);
         self::assertSame('merchant-1', $client->lastCreatePayload['order']['orderId']);
         self::assertSame('2500', $client->lastCreatePayload['order']['amount']);

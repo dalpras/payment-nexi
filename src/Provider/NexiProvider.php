@@ -71,7 +71,7 @@ final class NexiProvider implements PaymentProviderInterface
         $response = $this->httpClient->createHostedPaymentPage($payload, $correlationId);
 
         return new CheckoutResponse(
-            status: PaymentStatus::PENDING_CUSTOMER_ACTION,
+            status: PaymentStatus::PendingCustomerAction,
             redirectRequired: true,
             redirectUrl: isset($response['hostedPage']) && is_string($response['hostedPage']) ? $response['hostedPage'] : null,
             providerPaymentId: $request->merchantReference,
@@ -106,7 +106,7 @@ final class NexiProvider implements PaymentProviderInterface
     public function authorize(AuthorizeRequest $request): AuthorizationResult
     {
         return new AuthorizationResult(
-            status: PaymentStatus::UNKNOWN,
+            status: PaymentStatus::Unknown,
             providerPaymentId: $request->providerPaymentId,
             transactionIds: [],
             message: 'Nexi authorization is driven by checkout captureType in this skeleton provider.',
@@ -122,7 +122,7 @@ final class NexiProvider implements PaymentProviderInterface
         $response = $this->httpClient->captureOperation($operationId, $payload, $correlationId, $request->idempotencyKey);
 
         return new CaptureResult(
-            status: PaymentStatus::CAPTURED,
+            status: PaymentStatus::Captured,
             providerPaymentId: $operationId,
             transactionIds: array_values(array_filter([$response['operationId'] ?? null], 'is_string')),
             message: $response['operationId'] ?? null,
@@ -138,7 +138,7 @@ final class NexiProvider implements PaymentProviderInterface
         $response = $this->httpClient->cancelOperation($operationId, $payload, $correlationId, $request->idempotencyKey);
 
         return new CancelResult(
-            status: PaymentStatus::CANCELLED,
+            status: PaymentStatus::Cancelled,
             providerPaymentId: $operationId,
             transactionIds: array_values(array_filter([$response['operationId'] ?? null], 'is_string')),
             message: $response['operationId'] ?? null,
@@ -154,7 +154,7 @@ final class NexiProvider implements PaymentProviderInterface
         $response = $this->httpClient->refundOperation($operationId, $payload, $correlationId, $request->idempotencyKey);
 
         return new RefundResult(
-            status: PaymentStatus::REFUNDED,
+            status: PaymentStatus::Refunded,
             providerPaymentId: $operationId,
             transactionIds: array_values(array_filter([$response['operationId'] ?? null], 'is_string')),
             message: $response['operationId'] ?? null,
