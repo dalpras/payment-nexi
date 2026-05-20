@@ -131,12 +131,16 @@ final class NexiOrderMapper
             'FR' => 'FRA',
             'DE' => 'DEU',
             'ES' => 'ESP',
+            'PT' => 'PRT',
+            'BE' => 'BEL',
+            'NL' => 'NLD',
+            'AT' => 'AUT',
+            'CH' => 'CHE',
             'GB', 'UK' => 'GBR',
             'US' => 'USA',
             default => $countryCode,
         };
     }
-
     private function filterRecursive(array $payload): array
     {
         foreach ($payload as $key => $value) {
