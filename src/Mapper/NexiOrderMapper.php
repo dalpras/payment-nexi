@@ -34,11 +34,21 @@ final class NexiOrderMapper
         ];
 
         if (isset($request->providerOptions['customer_info']) && is_array($request->providerOptions['customer_info'])) {
-            $payload['customerInfo'] = array_replace($payload['customerInfo'], $request->providerOptions['customer_info']);
+            $payload['customerInfo'] = array_replace(
+                $payload['customerInfo'],
+                $request->providerOptions['customer_info']
+            );
         }
 
         if (isset($request->providerOptions['billing_address']) && is_array($request->providerOptions['billing_address'])) {
-            $payload['billingAddress'] = array_replace($payload['billingAddress'], $request->providerOptions['billing_address']);
+            $payload['billingAddress'] = array_replace(
+                $payload['billingAddress'],
+                $request->providerOptions['billing_address']
+            );
+        }
+
+        if (isset($payload['billingAddress']['country']) && is_string($payload['billingAddress']['country'])) {
+            $payload['billingAddress']['country'] = $this->normalizeCountryCode($payload['billingAddress']['country']);
         }
 
         return $this->filterRecursive($payload);
@@ -75,7 +85,8 @@ final class NexiOrderMapper
     {
         return match ($intent) {
             PaymentIntent::Sale => 'IMPLICIT',
-            PaymentIntent::Authorize, PaymentIntent::CaptureLater => 'EXPLICIT',
+            PaymentIntent::Authorize,
+            PaymentIntent::CaptureLater => 'EXPLICIT',
         };
     }
 
@@ -90,6 +101,7 @@ final class NexiOrderMapper
     private function mapBillingAddress(Customer $customer): array
     {
         $address = $customer->billingAddress;
+
         if (!$address instanceof Address) {
             return [];
         }
@@ -101,9 +113,28 @@ final class NexiOrderMapper
             'city' => $address->city,
             'postCode' => $address->postalCode,
             'province' => $address->province,
-            'country' => $address->countryCode,
+            'country' => $this->normalizeCountryCode($address->countryCode),
             'phoneNumber' => $address->phone,
         ]);
+    }
+
+    private function normalizeCountryCode(?string $countryCode): ?string
+    {
+        if ($countryCode === null || trim($countryCode) === '') {
+            return null;
+        }
+
+        $countryCode = strtoupper(trim($countryCode));
+
+        return match ($countryCode) {
+            'IT' => 'ITA',
+            'FR' => 'FRA',
+            'DE' => 'DEU',
+            'ES' => 'ESP',
+            'GB', 'UK' => 'GBR',
+            'US' => 'USA',
+            default => $countryCode,
+        };
     }
 
     private function filterRecursive(array $payload): array
