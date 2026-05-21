@@ -80,7 +80,9 @@ final class NexiOrderMapper
     public function mapRefundPayload(RefundRequest $request): array
     {
         return $this->filterRecursive([
-            'amount' => $request->metadata['amount_minor'] ?? null,
+            'amount' => isset($request->metadata['amount_minor'])
+                ? (string) $request->metadata['amount_minor']
+                : null,
             'currency' => $request->metadata['currency'] ?? null,
             'description' => $request->metadata['description'] ?? null,
         ]);
