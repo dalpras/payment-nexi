@@ -15,6 +15,7 @@ use DalPraS\Payment\ValueObject\Customer;
 use DalPraS\Payment\ValueObject\LineItem;
 use DalPraS\Payment\ValueObject\Money;
 use PHPUnit\Framework\TestCase;
+use Ramsey\Uuid\Uuid;
 
 final class NexiProviderTest extends TestCase
 {
@@ -98,7 +99,7 @@ final class NexiProviderTest extends TestCase
             webhookUrl: 'https://example.com/pay/webhook',
             intent: $intent,
             locale: 'it-IT',
-            idempotencyKey: 'checkout-1',
+            idempotencyKey: Uuid::uuid4()->toString(),
             correlationId: 'corr-1',
             metadata: ['description' => 'Test order'],
             providerOptions: ['language' => 'ita'],

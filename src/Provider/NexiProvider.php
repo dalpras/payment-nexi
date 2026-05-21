@@ -75,7 +75,7 @@ final class NexiProvider implements PaymentProviderInterface
             )
         );
 
-        $correlationId = $request->correlationId ?? $request->idempotencyKey ?? $request->paymentReference;
+        $correlationId = $this->resolveCorrelationId($request->correlationId, $request->idempotencyKey, $request->paymentReference);
         $response = $this->httpClient->createHostedPaymentPage($payload, $correlationId);
         $securityToken = isset($response['securityToken']) && is_string($response['securityToken'])
             ? $response['securityToken']
@@ -95,6 +95,10 @@ final class NexiProvider implements PaymentProviderInterface
                 'order_id' => $request->merchantReference,
                 'nexi_order_id' => $request->merchantReference,
                 'nexi_security_token' => $securityToken,
+                'force_capture_after_authorization' => $request->providerOptions['force_capture_after_authorization'] ?? null,
+                'capture_description' => $request->providerOptions['capture_description'] ?? null,
+                'amount_minor' => (string) $request->amounts->grandTotal->minorAmount(),
+                'currency' => $request->amounts->grandTotal->currency()->value,
             ]),
         );
     }
@@ -116,14 +120,20 @@ final class NexiProvider implements PaymentProviderInterface
             throw new NexiConfigurationException('Missing Nexi order id for checkout completion.');
         }
 
-        $correlationId = $request->correlationId ?? $request->idempotencyKey ?? $request->paymentReference;
+        $correlationId = $this->resolveCorrelationId(
+            $request->correlationId,
+            $request->metadata['correlation_id'] ?? null,
+            $request->metadata['nexi_correlation_id'] ?? null,
+            $request->idempotencyKey,
+            $request->paymentReference,
+        );
         $response = $this->httpClient->getOrder($orderId, $correlationId);
         $transactionIds = $this->extractTransactionIds($response);
         $metadata = $this->extractOrderMetadata($response, $orderId);
 
         return new CompletionResult(
             status: NexiStatusMapper::fromOrderPayload($response),
-            providerPaymentId: $orderId,
+            providerPaymentId: $metadata['operation_id'] ?? $orderId,
             transactionIds: $transactionIds,
             message: $response['status'] ?? $response['result'] ?? null,
             raw: $response,
@@ -146,7 +156,12 @@ final class NexiProvider implements PaymentProviderInterface
     public function capture(CaptureRequest $request): CaptureResult
     {
         $operationId = $this->resolveOperationId($request->providerPaymentId, $request->metadata);
-        $correlationId = $request->idempotencyKey ?? $request->paymentReference;
+        $correlationId = $this->resolveCorrelationId(
+            $request->metadata['correlation_id'] ?? null,
+            $request->metadata['nexi_correlation_id'] ?? null,
+            $request->idempotencyKey,
+            $request->paymentReference,
+        );
         $payload = $this->mapper->mapCapturePayload($request);
         $response = $this->httpClient->captureOperation($operationId, $payload, $correlationId, $request->idempotencyKey);
         $newOperationId = isset($response['operationId']) && is_string($response['operationId']) ? $response['operationId'] : null;
@@ -170,7 +185,12 @@ final class NexiProvider implements PaymentProviderInterface
     public function cancel(CancelRequest $request): CancelResult
     {
         $operationId = $this->resolveOperationId($request->providerPaymentId, $request->metadata);
-        $correlationId = $request->idempotencyKey ?? $request->paymentReference;
+        $correlationId = $this->resolveCorrelationId(
+            $request->metadata['correlation_id'] ?? null,
+            $request->metadata['nexi_correlation_id'] ?? null,
+            $request->idempotencyKey,
+            $request->paymentReference,
+        );
         $payload = $this->mapper->mapCancelPayload($request);
         $response = $this->httpClient->cancelOperation($operationId, $payload, $correlationId, $request->idempotencyKey);
         $newOperationId = isset($response['operationId']) && is_string($response['operationId']) ? $response['operationId'] : null;
@@ -193,7 +213,12 @@ final class NexiProvider implements PaymentProviderInterface
     public function refund(RefundRequest $request): RefundResult
     {
         $operationId = $this->resolveOperationId($request->providerPaymentId, $request->metadata);
-        $correlationId = $request->idempotencyKey ?? $request->paymentReference;
+        $correlationId = $this->resolveCorrelationId(
+            $request->metadata['correlation_id'] ?? null,
+            $request->metadata['nexi_correlation_id'] ?? null,
+            $request->idempotencyKey,
+            $request->paymentReference,
+        );
         $payload = $this->mapper->mapRefundPayload($request);
         $response = $this->httpClient->refundOperation($operationId, $payload, $correlationId, $request->idempotencyKey);
         $newOperationId = isset($response['operationId']) && is_string($response['operationId']) ? $response['operationId'] : null;
@@ -215,26 +240,32 @@ final class NexiProvider implements PaymentProviderInterface
 
     public function sync(SyncRequest $request): SyncResult
     {
-        $orderId = $request->providerPaymentId
-            ?? $request->metadata['nexi_order_id']
+        $orderId = $request->metadata['nexi_order_id']
             ?? $request->metadata['order_id']
+            ?? $request->providerPaymentId
             ?? null;
 
         if (!is_string($orderId) || $orderId === '') {
             throw new NexiConfigurationException('Missing Nexi order id for sync operation.');
         }
 
-        $correlationId = $request->idempotencyKey ?? $request->paymentReference;
+        $correlationId = $this->resolveCorrelationId(
+            $request->metadata['correlation_id'] ?? null,
+            $request->metadata['nexi_correlation_id'] ?? null,
+            $request->idempotencyKey,
+            $request->paymentReference,
+        );
         $response = $this->httpClient->getOrder($orderId, $correlationId);
         $transactionIds = $this->extractTransactionIds($response);
+        $metadata = $this->extractOrderMetadata($response, $orderId);
 
         return new SyncResult(
             status: NexiStatusMapper::fromOrderPayload($response),
-            providerPaymentId: $orderId,
+            providerPaymentId: $metadata['operation_id'] ?? $orderId,
             transactionIds: $transactionIds,
             message: $response['status'] ?? $response['result'] ?? null,
             raw: $response,
-            metadata: $this->extractOrderMetadata($response, $orderId),
+            metadata: $metadata,
         );
     }
 
@@ -304,7 +335,7 @@ final class NexiProvider implements PaymentProviderInterface
 
         return $this->filterMetadata([
             'provider' => $this->code(),
-            'provider_payment_id' => $orderId,
+            'provider_payment_id' => $mainOperationId ?? $orderId,
             'order_id' => $orderId,
             'nexi_order_id' => $orderId,
             'operation_id' => $mainOperationId,
@@ -357,6 +388,32 @@ final class NexiProvider implements PaymentProviderInterface
         }
 
         return array_values(array_unique($ids));
+    }
+
+    /** Nexi requires Correlation-Id to be UUID-formatted on every API request. */
+    private function resolveCorrelationId(?string ...$candidates): string
+    {
+        foreach ($candidates as $candidate) {
+            if (is_string($candidate) && $this->isUuid($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return $this->generateCorrelationId();
+    }
+
+    private function isUuid(string $value): bool
+    {
+        return preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', $value) === 1;
+    }
+
+    private function generateCorrelationId(): string
+    {
+        $data = random_bytes(16);
+        $data[6] = chr((ord($data[6]) & 0x0f) | 0x40);
+        $data[8] = chr((ord($data[8]) & 0x3f) | 0x80);
+
+        return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
     }
 
     private function filterMetadata(array $metadata): array
