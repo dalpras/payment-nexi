@@ -95,6 +95,12 @@ final class NexiProvider implements PaymentProviderInterface
                 'order_id' => $request->merchantReference,
                 'nexi_order_id' => $request->merchantReference,
                 'nexi_security_token' => $securityToken,
+
+                // Persist original HPP context for later status mapping.
+                'nexi_action_type' => 'PAY',
+                'nexi_capture_type' => $request->providerOptions['capture_type']
+                    ?? $this->config->defaultCaptureType,
+
                 'force_capture_after_authorization' => $request->providerOptions['force_capture_after_authorization'] ?? null,
                 'capture_description' => $request->providerOptions['capture_description'] ?? null,
                 'amount_minor' => (string) $request->amounts->grandTotal->minorAmount(),
@@ -129,10 +135,13 @@ final class NexiProvider implements PaymentProviderInterface
         );
         $response = $this->httpClient->getOrder($orderId, $correlationId);
         $transactionIds = $this->extractTransactionIds($response);
-        $metadata = $this->extractOrderMetadata($response, $orderId);
+        $metadata = array_replace_recursive(
+            $request->metadata,
+            $this->extractOrderMetadata($response, $orderId),
+        );
 
         return new CompletionResult(
-            status: NexiStatusMapper::fromOrderPayload($response),
+            status: NexiStatusMapper::fromOrderPayload($response, $request->metadata),
             providerPaymentId: $metadata['operation_id'] ?? $orderId,
             transactionIds: $transactionIds,
             message: $response['status'] ?? $response['result'] ?? null,
@@ -257,10 +266,13 @@ final class NexiProvider implements PaymentProviderInterface
         );
         $response = $this->httpClient->getOrder($orderId, $correlationId);
         $transactionIds = $this->extractTransactionIds($response);
-        $metadata = $this->extractOrderMetadata($response, $orderId);
+        $metadata = array_replace_recursive(
+            $request->metadata,
+            $this->extractOrderMetadata($response, $orderId),
+        );
 
         return new SyncResult(
-            status: NexiStatusMapper::fromOrderPayload($response),
+            status: NexiStatusMapper::fromOrderPayload($response, $request->metadata),
             providerPaymentId: $metadata['operation_id'] ?? $orderId,
             transactionIds: $transactionIds,
             message: $response['status'] ?? $response['result'] ?? null,
