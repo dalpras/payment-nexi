@@ -1,36 +1,16 @@
 # dalpras/payment-nexi
 
-Nexi XPay connector skeleton for `dalpras/payment-core`.
+Nexi XPay connector for `dalpras/payment-core`, focused on Hosted Payment Page checkout and operation-based post-payment actions.
 
-This package is a starting point for a production Nexi connector built on top of the current XPay APIs, with the **Hosted Payment Page** flow as the primary checkout model:
+Supported flow:
 
-- create hosted checkout session
-- redirect buyer to Nexi hosted page
-- complete browser return by querying the order result
-- capture previously authorized operations
-- refund / cancel operations
+- create Hosted Payment Page order with `POST /orders/hpp`
+- redirect the buyer to Nexi `hostedPage`
+- complete browser return by querying `GET /orders/{orderId}`
+- persist Nexi `operationId` metadata returned by order lookup
+- capture, refund and cancel by calling operation endpoints
 - sync order state
-- parse notifications
-
-## Status
-
-Skeleton package only.
-
-Included:
-- provider implementation against `DalPraS\Payment\Contract\PaymentProviderInterface`
-- config object
-- PSR-18 HTTP client
-- mapper from core DTOs to Nexi HPP payloads
-- status mapping helpers
-- notification parser stub
-- tests for payload mapping and redirect extraction
-
-Not yet included:
-- production-grade notification verification
-- full mapping of every Nexi notification field
-- advanced XPay Build or 3-step flows
-- operation action discovery via `GET /operations/{operationId}/actions`
-- production retry policy and observability
+- parse basic notifications
 
 ## Installation
 
@@ -40,7 +20,6 @@ composer require dalpras/payment-nexi
 
 ## Dependencies
 
-This package depends on:
 - `dalpras/payment-core`
 - `psr/http-client`
 - `psr/http-factory`
@@ -60,7 +39,7 @@ $config = new NexiConfig(
     apiKey: 'sandbox-api-key',
     sandbox: true,
     defaultLanguage: 'ita',
-    defaultCaptureType: 'IMPLICIT'
+    defaultCaptureType: 'IMPLICIT',
 );
 
 $httpClient = new NexiHttpClient(
@@ -75,76 +54,190 @@ $provider = new NexiProvider(
     httpClient: $httpClient,
     mapper: new NexiOrderMapper(),
 );
-
-$response = $provider->createCheckout($checkoutRequest);
-
-if ($response->redirectRequired) {
-    header('Location: ' . $response->redirectUrl);
-    exit;
-}
 ```
 
-## How it maps to the core package
+Register the provider in `PaymentManager` through the core `ProviderRegistry`.
 
-### `CheckoutRequest`
-Mapped to Nexi `POST /orders/hpp`.
+## Checkout payload mapping
 
-- `merchantReference` -> `order.orderId`
-- `grandTotal` -> `order.amount` in the smallest currency unit
-- `currency` -> `order.currency`
-- customer snapshot -> `customerInfo` / `billingAddress`
-- `returnUrl` -> `resultUrl`
-- `cancelUrl` -> `cancelUrl`
-- `webhookUrl` -> `notificationUrl`
-- `intent = sale` -> capture type `IMPLICIT`
-- `intent = authorize` or `capture_later` -> capture type `EXPLICIT`
-- provider options can constrain `paymentService`, `language`, and other HPP options
+`CheckoutRequest` maps to Nexi HPP as:
 
-### `CompletionRequest`
-This skeleton treats browser return as a UX event and resolves final state by querying `GET /orders/{orderId}`.
-Pass the Nexi order id through one of:
-- `queryParams['orderId']`
-- `bodyParams['orderId']`
-- `expectedProviderPaymentId`
+```php
+[
+    'order' => [
+        'orderId' => $request->merchantReference,
+        'amount' => (string) $request->amounts->grandTotal->minorAmount(),
+        'currency' => $request->amounts->grandTotal->currency()->value,
+        'customerInfo' => [...],
+        'billingAddress' => [...],
+    ],
+    'paymentSession' => [
+        'actionType' => 'PAY',      // sale
+        'amount' => '5000',
+        'language' => 'ita',
+        'captureType' => 'IMPLICIT',
+        'resultUrl' => $returnUrl,
+        'cancelUrl' => $cancelUrl,
+        'notificationUrl' => $webhookUrl,
+    ],
+]
+```
 
-### `CaptureRequest`
-Uses `POST /operations/{operationId}/captures`.
-Pass the Nexi operation id through:
-- `metadata['operation_id']`, or
-- `providerPaymentId`
+Intent mapping:
 
-### `RefundRequest`
-Uses `POST /operations/{operationId}/refunds`.
-Pass the Nexi operation id through:
-- `metadata['operation_id']`, or
-- `providerPaymentId`
+| Core intent | Nexi `actionType` | Nexi `captureType` |
+| --- | --- | --- |
+| `sale` | `PAY` | `IMPLICIT` |
+| `authorize` | `PREAUTH` | `EXPLICIT` |
+| `capture_later` | `PREAUTH` | `EXPLICIT` |
 
-### `CancelRequest`
-Uses `POST /operations/{operationId}/cancels`.
-Pass the Nexi operation id through:
-- `metadata['operation_id']`, or
-- `providerPaymentId`
+The `resultUrl` should include enough application context to reload the local payment, for example your payment UUID. The provider also stores `nexi_order_id`, so `PaymentManager::completeCheckout()` can enrich completion even if the browser return does not include `orderId`.
 
-## Recommended production additions
+## Metadata returned by this provider
 
-- persist the Nexi `securityToken` returned by checkout creation if you want to use it for notification validation
-- persist the main Nexi `operationId` once known, so capture/refund/cancel are straightforward
-- use browser return for UX and notification + sync for authoritative reconciliation
-- keep correlation and idempotency keys stable across retries
-- persist raw Nexi payloads for support and reconciliation
+### Checkout creation
 
-## Package layout
+```php
+[
+    'provider' => 'nexi',
+    'provider_payment_id' => $merchantReference,
+    'order_id' => $merchantReference,
+    'nexi_order_id' => $merchantReference,
+    'nexi_security_token' => $securityToken,
+]
+```
 
-- `src/Config/NexiConfig.php`
-- `src/Http/NexiHttpClient.php`
-- `src/Mapper/NexiOrderMapper.php`
-- `src/Provider/NexiProvider.php`
-- `src/Support/NexiStatusMapper.php`
-- `src/Exception/*`
+### Completion / sync
 
-## Next steps
+After `GET /orders/{orderId}`, the provider extracts operation ids from the order payload and returns:
 
-A practical next step is to connect this package to your `dalpras/payment-core` `PaymentManager`, then add:
-- persistence of Nexi order and operation ids
-- notification verification based on your chosen reconciliation strategy
-- PHPUnit fixtures for XPay sandbox responses
+```php
+[
+    'provider' => 'nexi',
+    'provider_payment_id' => $orderId,
+    'order_id' => $orderId,
+    'nexi_order_id' => $orderId,
+    'operation_id' => $mainOperationId,
+    'nexi_operation_id' => $mainOperationId,
+    'nexi_transaction_ids' => [$operationId1, $operationId2],
+]
+```
+
+`operation_id` is the generic key used by core for future capture/refund/cancel operations.
+
+### Capture
+
+```php
+[
+    'provider' => 'nexi',
+    'operation_id' => $newOperationIdOrSourceOperationId,
+    'nexi_operation_id' => $newOperationIdOrSourceOperationId,
+    'nexi_capture_operation_id' => $newOperationId,
+    'nexi_source_operation_id' => $sourceOperationId,
+]
+```
+
+### Refund
+
+```php
+[
+    'provider' => 'nexi',
+    'operation_id' => $sourceOperationId,
+    'nexi_operation_id' => $sourceOperationId,
+    'nexi_refund_operation_id' => $refundOperationId,
+]
+```
+
+### Cancel
+
+```php
+[
+    'provider' => 'nexi',
+    'operation_id' => $sourceOperationId,
+    'nexi_operation_id' => $sourceOperationId,
+    'nexi_cancel_operation_id' => $cancelOperationId,
+]
+```
+
+## Completion
+
+`completeCheckout()` resolves the Nexi order id from, in order:
+
+1. `queryParams['orderId']`
+2. `queryParams['order_id']`
+3. `queryParams['codTrans']`
+4. `bodyParams['orderId']`
+5. `bodyParams['order_id']`
+6. `bodyParams['codTrans']`
+7. `expectedProviderPaymentId`
+8. `metadata['nexi_order_id']`
+9. `metadata['order_id']`
+
+When used through `PaymentManager`, `expectedProviderPaymentId` and metadata are normally filled automatically from the stored `Payment`.
+
+## Capture, refund and cancel
+
+Nexi post-payment actions use operation ids, not the HPP order id.
+
+The provider resolves the operation id from:
+
+1. `metadata['operation_id']`
+2. `metadata['nexi_operation_id']`
+3. `metadata['nexi_capture_operation_id']`
+4. `metadata['nexi_authorization_operation_id']`
+5. `providerPaymentId`
+
+When used through `PaymentManager`, this metadata is normally persisted after completion/sync and re-injected automatically.
+
+### Refund request metadata
+
+```php
+$result = $paymentManager->refund(new RefundRequest(
+    providerCode: 'nexi',
+    paymentReference: $paymentReference,
+    providerPaymentId: null,
+    idempotencyKey: $refundId,
+    metadata: [
+        'amount_minor' => '5000',
+        'currency' => 'EUR',
+        'description' => 'Customer refund',
+    ],
+));
+```
+
+### Cancel request metadata
+
+```php
+$result = $paymentManager->cancel(new CancelRequest(
+    providerCode: 'nexi',
+    paymentReference: $paymentReference,
+    providerPaymentId: null,
+    idempotencyKey: $cancelId,
+    metadata: [
+        'description' => 'Cancel accounting operation',
+    ],
+));
+```
+
+The cancel payload intentionally sends only `description`; the operation id is part of the URL.
+
+## Notification verification
+
+The current implementation provides a basic shared-secret/security-token comparison. Production systems should confirm the exact Nexi notification signing/verification strategy used by the merchant account and add reconciliation through `sync()`.
+
+## Testing
+
+```bash
+composer install
+vendor/bin/phpunit
+```
+
+Syntax check:
+
+```bash
+find src tests -name '*.php' -print0 | xargs -0 -n1 php -l
+```
+
+## License
+
+MIT

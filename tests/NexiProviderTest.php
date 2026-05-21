@@ -44,8 +44,11 @@ final class NexiProviderTest extends TestCase
         self::assertSame('merchant-1', $client->lastCreatePayload['order']['orderId']);
         self::assertSame('2500', $client->lastCreatePayload['order']['amount']);
         self::assertSame('EUR', $client->lastCreatePayload['order']['currency']);
-        self::assertSame('buyer@example.com', $client->lastCreatePayload['customerInfo']['cardHolderEmail']);
-        self::assertSame('https://example.com/pay/return?orderId=merchant-1', $client->lastCreatePayload['resultUrl']);
+        self::assertSame('buyer@example.com', $client->lastCreatePayload['order']['customerInfo']['cardHolderEmail']);
+        self::assertSame('PAY', $client->lastCreatePayload['paymentSession']['actionType']);
+        self::assertSame('2500', $client->lastCreatePayload['paymentSession']['amount']);
+        self::assertSame('https://example.com/pay/return?orderId=merchant-1', $client->lastCreatePayload['paymentSession']['resultUrl']);
+        self::assertSame('merchant-1', $response->metadata['nexi_order_id']);
     }
 
     public function testMapperUsesExplicitCaptureForDeferredCaptureIntents(): void
@@ -54,8 +57,9 @@ final class NexiProviderTest extends TestCase
         $request = $this->checkoutRequest(PaymentIntent::CaptureLater);
         $payload = $mapper->mapCreateHostedPaymentPayload($request);
 
-        self::assertSame('EXPLICIT', $payload['captureType']);
-        self::assertSame('ita', $payload['language']);
+        self::assertSame('PREAUTH', $payload['paymentSession']['actionType']);
+        self::assertSame('EXPLICIT', $payload['paymentSession']['captureType']);
+        self::assertSame('ita', $payload['paymentSession']['language']);
     }
 
     private function checkoutRequest(PaymentIntent $intent = PaymentIntent::Sale): CheckoutRequest
