@@ -14,46 +14,60 @@ final class NexiOrderMapper
 {
     public function mapCreateHostedPaymentPayload(CheckoutRequest $request): array
     {
-        $payload = [
-            'order' => [
-                'orderId' => $request->merchantReference,
-                'amount' => (string) $request->amounts->grandTotal->minorAmount(),
-                'currency' => $request->amounts->grandTotal->currency()->value,
-                'customerId' => $request->customer->id,
-                'description' => $request->metadata['description'] ?? $request->merchantReference,
-                'customField' => $request->paymentReference,
-            ],
+        $amount = (string) $request->amounts->grandTotal->minorAmount();
+
+        $order = [
+            'orderId' => $request->merchantReference,
+            'amount' => $amount,
+            'currency' => $request->amounts->grandTotal->currency()->value,
+            'customerId' => $request->customer->id,
+            'description' => $request->metadata['description'] ?? $request->merchantReference,
+            'customField' => $request->paymentReference,
             'customerInfo' => $this->mapCustomerInfo($request->customer),
             'billingAddress' => $this->mapBillingAddress($request->customer),
-            'language' => $request->providerOptions['language'] ?? 'ita',
-            'paymentService' => $request->providerOptions['payment_service'] ?? null,
-            'captureType' => $request->providerOptions['capture_type'] ?? $this->mapCaptureType($request->intent),
-            'resultUrl' => $request->returnUrl,
-            'cancelUrl' => $request->cancelUrl,
-            'notificationUrl' => $request->webhookUrl,
         ];
 
         if (isset($request->providerOptions['customer_info']) && is_array($request->providerOptions['customer_info'])) {
-            $payload['customerInfo'] = array_replace(
-                $payload['customerInfo'],
+            $order['customerInfo'] = array_replace(
+                $order['customerInfo'] ?? [],
                 $request->providerOptions['customer_info']
             );
         }
 
         if (isset($request->providerOptions['billing_address']) && is_array($request->providerOptions['billing_address'])) {
-            $payload['billingAddress'] = array_replace(
-                $payload['billingAddress'],
+            $order['billingAddress'] = array_replace(
+                $order['billingAddress'] ?? [],
                 $request->providerOptions['billing_address']
             );
         }
 
-        if (isset($payload['billingAddress']['country']) && is_string($payload['billingAddress']['country'])) {
-            $payload['billingAddress']['country'] = $this->normalizeCountryCode($payload['billingAddress']['country']);
+        if (isset($order['billingAddress']['country']) && is_string($order['billingAddress']['country'])) {
+            $order['billingAddress']['country'] = $this->normalizeCountryCode($order['billingAddress']['country']);
         }
 
-        return $this->filterRecursive($payload);
+        return $this->filterRecursive([
+            'order' => $order,
+            'paymentSession' => [
+                'actionType' => $this->mapActionType($request->intent),
+                'amount' => $amount,
+                'language' => $request->providerOptions['language'] ?? 'ita',
+                'paymentService' => $request->providerOptions['payment_service'] ?? null,
+                'captureType' => $request->providerOptions['capture_type'] ?? $this->mapCaptureType($request->intent),
+                'resultUrl' => $request->returnUrl,
+                'cancelUrl' => $request->cancelUrl,
+                'notificationUrl' => $request->webhookUrl,
+            ],
+        ]);
     }
 
+    private function mapActionType(PaymentIntent $intent): string
+    {
+        return match ($intent) {
+            PaymentIntent::Sale => 'PAY',
+            PaymentIntent::Authorize,
+            PaymentIntent::CaptureLater => 'PREAUTH',
+        };
+    }
     public function mapCapturePayload(CaptureRequest $request): array
     {
         return $this->filterRecursive([
