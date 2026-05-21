@@ -3,8 +3,8 @@
 namespace DalPraS\Payment\Nexi\Provider;
 
 use DalPraS\Payment\Contract\PaymentProviderInterface;
-use DalPraS\Payment\Dto\AuthorizeRequest;
 use DalPraS\Payment\Dto\AuthorizationResult;
+use DalPraS\Payment\Dto\AuthorizeRequest;
 use DalPraS\Payment\Dto\CancelRequest;
 use DalPraS\Payment\Dto\CancelResult;
 use DalPraS\Payment\Dto\CaptureRequest;
@@ -27,6 +27,14 @@ use DalPraS\Payment\Nexi\Mapper\NexiOrderMapper;
 use DalPraS\Payment\Nexi\Support\NexiStatusMapper;
 use Psr\Http\Message\ServerRequestInterface;
 
+/**
+ * Nexi XPay provider implementation.
+ *
+ * Checkout uses the Hosted Payment Page order id, while capture/refund/cancel use
+ * operation ids. The provider therefore returns both generic metadata keys
+ * (order_id, operation_id) and Nexi-specific aliases (nexi_order_id,
+ * nexi_operation_id) so payment-core can store and reuse them safely.
+ */
 final class NexiProvider implements PaymentProviderInterface
 {
     public function __construct(
@@ -69,37 +77,57 @@ final class NexiProvider implements PaymentProviderInterface
 
         $correlationId = $request->correlationId ?? $request->idempotencyKey ?? $request->paymentReference;
         $response = $this->httpClient->createHostedPaymentPage($payload, $correlationId);
+        $securityToken = isset($response['securityToken']) && is_string($response['securityToken'])
+            ? $response['securityToken']
+            : null;
 
         return new CheckoutResponse(
             status: PaymentStatus::PendingCustomerAction,
             redirectRequired: true,
             redirectUrl: isset($response['hostedPage']) && is_string($response['hostedPage']) ? $response['hostedPage'] : null,
             providerPaymentId: $request->merchantReference,
-            providerToken: isset($response['securityToken']) && is_string($response['securityToken']) ? $response['securityToken'] : null,
+            providerToken: $securityToken,
             raw: $response,
             message: $response['result'] ?? null,
+            metadata: $this->filterMetadata([
+                'provider' => $this->code(),
+                'provider_payment_id' => $request->merchantReference,
+                'order_id' => $request->merchantReference,
+                'nexi_order_id' => $request->merchantReference,
+                'nexi_security_token' => $securityToken,
+            ]),
         );
     }
 
     public function completeCheckout(CompletionRequest $request): CompletionResult
     {
         $orderId = $request->queryParams['orderId']
+            ?? $request->queryParams['order_id']
+            ?? $request->queryParams['codTrans']
             ?? $request->bodyParams['orderId']
-            ?? $request->expectedProviderPaymentId;
+            ?? $request->bodyParams['order_id']
+            ?? $request->bodyParams['codTrans']
+            ?? $request->expectedProviderPaymentId
+            ?? $request->metadata['nexi_order_id']
+            ?? $request->metadata['order_id']
+            ?? null;
 
         if (!is_string($orderId) || $orderId === '') {
             throw new NexiConfigurationException('Missing Nexi order id for checkout completion.');
         }
 
-        $correlationId = $request->idempotencyKey ?? $request->paymentReference;
+        $correlationId = $request->correlationId ?? $request->idempotencyKey ?? $request->paymentReference;
         $response = $this->httpClient->getOrder($orderId, $correlationId);
+        $transactionIds = $this->extractTransactionIds($response);
+        $metadata = $this->extractOrderMetadata($response, $orderId);
 
         return new CompletionResult(
             status: NexiStatusMapper::fromOrderPayload($response),
             providerPaymentId: $orderId,
-            transactionIds: $this->extractTransactionIds($response),
+            transactionIds: $transactionIds,
             message: $response['status'] ?? $response['result'] ?? null,
             raw: $response,
+            metadata: $metadata,
         );
     }
 
@@ -109,8 +137,9 @@ final class NexiProvider implements PaymentProviderInterface
             status: PaymentStatus::Unknown,
             providerPaymentId: $request->providerPaymentId,
             transactionIds: [],
-            message: 'Nexi authorization is driven by checkout captureType in this skeleton provider.',
+            message: 'Nexi authorization is driven by checkout captureType in this provider.',
             raw: [],
+            metadata: ['provider' => $this->code()],
         );
     }
 
@@ -120,13 +149,21 @@ final class NexiProvider implements PaymentProviderInterface
         $correlationId = $request->idempotencyKey ?? $request->paymentReference;
         $payload = $this->mapper->mapCapturePayload($request);
         $response = $this->httpClient->captureOperation($operationId, $payload, $correlationId, $request->idempotencyKey);
+        $newOperationId = isset($response['operationId']) && is_string($response['operationId']) ? $response['operationId'] : null;
 
         return new CaptureResult(
             status: PaymentStatus::Captured,
             providerPaymentId: $operationId,
-            transactionIds: array_values(array_filter([$response['operationId'] ?? null], 'is_string')),
-            message: $response['operationId'] ?? null,
+            transactionIds: array_values(array_filter([$newOperationId], 'is_string')),
+            message: $newOperationId,
             raw: $response,
+            metadata: $this->filterMetadata([
+                'provider' => $this->code(),
+                'operation_id' => $newOperationId ?? $operationId,
+                'nexi_operation_id' => $newOperationId ?? $operationId,
+                'nexi_capture_operation_id' => $newOperationId,
+                'nexi_source_operation_id' => $operationId,
+            ]),
         );
     }
 
@@ -136,13 +173,20 @@ final class NexiProvider implements PaymentProviderInterface
         $correlationId = $request->idempotencyKey ?? $request->paymentReference;
         $payload = $this->mapper->mapCancelPayload($request);
         $response = $this->httpClient->cancelOperation($operationId, $payload, $correlationId, $request->idempotencyKey);
+        $newOperationId = isset($response['operationId']) && is_string($response['operationId']) ? $response['operationId'] : null;
 
         return new CancelResult(
             status: PaymentStatus::Cancelled,
             providerPaymentId: $operationId,
-            transactionIds: array_values(array_filter([$response['operationId'] ?? null], 'is_string')),
-            message: $response['operationId'] ?? null,
+            transactionIds: array_values(array_filter([$newOperationId], 'is_string')),
+            message: $newOperationId,
             raw: $response,
+            metadata: $this->filterMetadata([
+                'provider' => $this->code(),
+                'operation_id' => $operationId,
+                'nexi_operation_id' => $operationId,
+                'nexi_cancel_operation_id' => $newOperationId,
+            ]),
         );
     }
 
@@ -152,32 +196,45 @@ final class NexiProvider implements PaymentProviderInterface
         $correlationId = $request->idempotencyKey ?? $request->paymentReference;
         $payload = $this->mapper->mapRefundPayload($request);
         $response = $this->httpClient->refundOperation($operationId, $payload, $correlationId, $request->idempotencyKey);
+        $newOperationId = isset($response['operationId']) && is_string($response['operationId']) ? $response['operationId'] : null;
 
         return new RefundResult(
             status: PaymentStatus::Refunded,
             providerPaymentId: $operationId,
-            transactionIds: array_values(array_filter([$response['operationId'] ?? null], 'is_string')),
-            message: $response['operationId'] ?? null,
+            transactionIds: array_values(array_filter([$newOperationId], 'is_string')),
+            message: $newOperationId,
             raw: $response,
+            metadata: $this->filterMetadata([
+                'provider' => $this->code(),
+                'operation_id' => $operationId,
+                'nexi_operation_id' => $operationId,
+                'nexi_refund_operation_id' => $newOperationId,
+            ]),
         );
     }
 
     public function sync(SyncRequest $request): SyncResult
     {
-        $orderId = $request->providerPaymentId ?? ($request->metadata['order_id'] ?? null);
+        $orderId = $request->providerPaymentId
+            ?? $request->metadata['nexi_order_id']
+            ?? $request->metadata['order_id']
+            ?? null;
+
         if (!is_string($orderId) || $orderId === '') {
             throw new NexiConfigurationException('Missing Nexi order id for sync operation.');
         }
 
         $correlationId = $request->idempotencyKey ?? $request->paymentReference;
         $response = $this->httpClient->getOrder($orderId, $correlationId);
+        $transactionIds = $this->extractTransactionIds($response);
 
         return new SyncResult(
             status: NexiStatusMapper::fromOrderPayload($response),
             providerPaymentId: $orderId,
-            transactionIds: $this->extractTransactionIds($response),
+            transactionIds: $transactionIds,
             message: $response['status'] ?? $response['result'] ?? null,
             raw: $response,
+            metadata: $this->extractOrderMetadata($response, $orderId),
         );
     }
 
@@ -223,14 +280,64 @@ final class NexiProvider implements PaymentProviderInterface
         );
     }
 
+    /** Resolve the Nexi operationId required by capture/refund/cancel endpoints. */
     private function resolveOperationId(?string $providerPaymentId, array $metadata): string
     {
-        $operationId = $metadata['operation_id'] ?? $providerPaymentId;
+        $operationId = $metadata['operation_id']
+            ?? $metadata['nexi_operation_id']
+            ?? $metadata['nexi_capture_operation_id']
+            ?? $metadata['nexi_authorization_operation_id']
+            ?? $providerPaymentId;
+
         if (!is_string($operationId) || $operationId === '') {
             throw new NexiConfigurationException('Missing Nexi operation id for post-payment operation.');
         }
 
         return $operationId;
+    }
+
+    /** Extract normalized IDs from GET /orders/{orderId} for future operations. */
+    private function extractOrderMetadata(array $payload, string $orderId): array
+    {
+        $operationIds = $this->extractTransactionIds($payload);
+        $mainOperationId = $this->extractMainOperationId($payload);
+
+        return $this->filterMetadata([
+            'provider' => $this->code(),
+            'provider_payment_id' => $orderId,
+            'order_id' => $orderId,
+            'nexi_order_id' => $orderId,
+            'operation_id' => $mainOperationId,
+            'nexi_operation_id' => $mainOperationId,
+            'nexi_transaction_ids' => $operationIds,
+        ]);
+    }
+
+    /** Prefer successful payment/capture/authorization operations as the reusable operation id. */
+    private function extractMainOperationId(array $payload): ?string
+    {
+        $operations = isset($payload['operations']) && is_array($payload['operations']) ? $payload['operations'] : [];
+
+        foreach (['CAPTURE', 'PAYMENT', 'AUTHORIZATION'] as $preferredType) {
+            foreach ($operations as $operation) {
+                if (!is_array($operation)) {
+                    continue;
+                }
+
+                $operationType = strtoupper((string) ($operation['operationType'] ?? ''));
+                $operationResult = strtoupper((string) ($operation['operationResult'] ?? ''));
+
+                if ($operationType === $preferredType
+                    && in_array($operationResult, ['EXECUTED', 'SUCCESS', 'OK'], true)
+                    && isset($operation['operationId'])
+                    && is_string($operation['operationId'])
+                ) {
+                    return $operation['operationId'];
+                }
+            }
+        }
+
+        return $this->extractTransactionIds($payload)[0] ?? null;
     }
 
     private function extractTransactionIds(array $payload): array
@@ -250,5 +357,10 @@ final class NexiProvider implements PaymentProviderInterface
         }
 
         return array_values(array_unique($ids));
+    }
+
+    private function filterMetadata(array $metadata): array
+    {
+        return array_filter($metadata, static fn ($value): bool => $value !== null && $value !== '' && $value !== []);
     }
 }

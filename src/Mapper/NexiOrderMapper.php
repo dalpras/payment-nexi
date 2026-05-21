@@ -10,8 +10,15 @@ use DalPraS\Payment\Enum\PaymentIntent;
 use DalPraS\Payment\ValueObject\Address;
 use DalPraS\Payment\ValueObject\Customer;
 
+/** Maps provider-neutral core DTOs to Nexi XPay payloads. */
 final class NexiOrderMapper
 {
+    /**
+     * Build the HPP payload using Nexi's order + paymentSession structure.
+     *
+     * order.orderId is the stable merchant/Nexi order reference. paymentSession
+     * contains the browser-flow fields used by Hosted Payment Page.
+     */
     public function mapCreateHostedPaymentPayload(CheckoutRequest $request): array
     {
         $amount = (string) $request->amounts->grandTotal->minorAmount();
@@ -88,11 +95,10 @@ final class NexiOrderMapper
         ]);
     }
 
+    /** Nexi cancel accepts the operation id in the URL and an optional description body. */
     public function mapCancelPayload(CancelRequest $request): array
     {
         return $this->filterRecursive([
-            'amount' => $request->metadata['amount_minor'] ?? null,
-            'currency' => $request->metadata['currency'] ?? null,
             'description' => $request->metadata['description'] ?? null,
         ]);
     }
@@ -130,7 +136,6 @@ final class NexiOrderMapper
             'postCode' => $address->postalCode,
             'province' => $address->province,
             'country' => $this->normalizeCountryCode($address->countryCode),
-            'phoneNumber' => $address->phone,
         ]);
     }
 
