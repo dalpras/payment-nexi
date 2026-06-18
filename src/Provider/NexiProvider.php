@@ -22,6 +22,7 @@ use DalPraS\Payment\Dto\WebhookEvent;
 use DalPraS\Payment\Enum\PaymentStatus;
 use DalPraS\Payment\Nexi\Config\NexiConfig;
 use DalPraS\Payment\Nexi\Contract\NexiHttpClientInterface;
+use DalPraS\Payment\Nexi\Exception\NexiApiException;
 use DalPraS\Payment\Nexi\Exception\NexiConfigurationException;
 use DalPraS\Payment\Nexi\Mapper\NexiOrderMapper;
 use DalPraS\Payment\Nexi\Support\NexiStatusMapper;
@@ -193,7 +194,24 @@ final class NexiProvider implements PaymentProviderInterface
 
     public function cancel(CancelRequest $request): CancelResult
     {
-        $operationId = $this->resolveOperationId($request->providerPaymentId, $request->metadata);
+        $operationId = $this->resolveCancelOperationId($request->providerPaymentId, $request->metadata);
+
+        if ($operationId === null) {
+            $orderId = $this->resolveOrderId($request->providerPaymentId, $request->metadata);
+
+            return new CancelResult(
+                status: PaymentStatus::Cancelled,
+                providerPaymentId: $request->providerPaymentId,
+                message: 'Pagamento annullato dall’utente.',
+                metadata: $this->filterMetadata([
+                    'provider' => $this->code(),
+                    'order_id' => $orderId,
+                    'nexi_order_id' => $orderId,
+                    'nexi_cancel_local_only' => true,
+                ]),
+            );
+        }
+
         $correlationId = $this->resolveCorrelationId(
             $request->metadata['correlation_id'] ?? null,
             $request->metadata['nexi_correlation_id'] ?? null,
@@ -201,7 +219,29 @@ final class NexiProvider implements PaymentProviderInterface
             $request->paymentReference,
         );
         $payload = $this->mapper->mapCancelPayload($request);
-        $response = $this->httpClient->cancelOperation($operationId, $payload, $correlationId, $request->idempotencyKey);
+
+        try {
+            $response = $this->httpClient->cancelOperation($operationId, $payload, $correlationId, $request->idempotencyKey);
+        } catch (NexiApiException $exception) {
+            if ($exception->statusCode() !== 404) {
+                throw $exception;
+            }
+
+            return new CancelResult(
+                status: PaymentStatus::Cancelled,
+                providerPaymentId: $operationId,
+                message: 'Pagamento annullato dall’utente.',
+                raw: $exception->responsePayload(),
+                metadata: $this->filterMetadata([
+                    'provider' => $this->code(),
+                    'operation_id' => $operationId,
+                    'nexi_operation_id' => $operationId,
+                    'nexi_cancel_missing_remote_operation' => true,
+                    'nexi_cancel_error_status' => $exception->statusCode(),
+                ]),
+            );
+        }
+
         $newOperationId = isset($response['operationId']) && is_string($response['operationId']) ? $response['operationId'] : null;
 
         return new CancelResult(
@@ -321,6 +361,45 @@ final class NexiProvider implements PaymentProviderInterface
             message: 'Compared notification token with configured shared secret.',
             raw: $event->payload,
         );
+    }
+
+    /** Resolve a Nexi operation id for cancellation, if one already exists.
+     *
+     * A customer can leave the Hosted Payment Page before Nexi creates any
+     * payment operation. In that case the stored providerPaymentId is the order
+     * id, not an operation id, so /operations/{id}/cancels would return 404.
+     */
+    private function resolveCancelOperationId(?string $providerPaymentId, array $metadata): ?string
+    {
+        $operationId = $metadata['operation_id']
+            ?? $metadata['nexi_operation_id']
+            ?? $metadata['nexi_capture_operation_id']
+            ?? $metadata['nexi_authorization_operation_id']
+            ?? null;
+
+        if (is_string($operationId) && $operationId !== '') {
+            return $operationId;
+        }
+
+        $orderId = $this->resolveOrderId($providerPaymentId, $metadata);
+        if ($orderId !== null && $providerPaymentId === $orderId) {
+            return null;
+        }
+
+        return is_string($providerPaymentId) && $providerPaymentId !== '' ? $providerPaymentId : null;
+    }
+
+    private function resolveOrderId(?string $providerPaymentId, array $metadata): ?string
+    {
+        $orderId = $metadata['order_id']
+            ?? $metadata['nexi_order_id']
+            ?? null;
+
+        if (is_string($orderId) && $orderId !== '') {
+            return $orderId;
+        }
+
+        return is_string($providerPaymentId) && $providerPaymentId !== '' ? $providerPaymentId : null;
     }
 
     /** Resolve the Nexi operationId required by capture/refund/cancel endpoints. */
