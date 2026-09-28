@@ -22,7 +22,16 @@ final class NexiStatusMapper
             ?? ''
         ));
 
-        $status = strtoupper((string) ($payload['status'] ?? ''));
+        $orderStatus = isset($payload['orderStatus']) && is_array($payload['orderStatus'])
+            ? $payload['orderStatus']
+            : [];
+
+        $status = strtoupper((string) (
+            $payload['status']
+            ?? $orderStatus['status']
+            ?? $orderStatus['orderState']
+            ?? ''
+        ));
 
         $actionType = strtoupper((string) (
             $payload['paymentSession']['actionType']
@@ -51,16 +60,64 @@ final class NexiStatusMapper
             };
         }
 
+        // GET /orders/{orderId} returns the transaction outcome in
+        // operations[*].operationResult. In particular, PENDING is a normal HPP
+        // state while the customer is still completing the payment. It must not be
+        // collapsed to Unknown merely because there is no successful operation yet.
+        if (in_array($operationResult, ['PENDING', 'THREEDS_VALIDATED'], true)) {
+            return PaymentStatus::PendingCustomerAction;
+        }
+
+        if ($operationResult === 'AUTHORIZED') {
+            return PaymentStatus::Authorized;
+        }
+
+        if (in_array($operationResult, ['DECLINED', 'DENIED', 'DENIED_BY_RISK', 'THREEDS_FAILED', 'FAILED', 'ERROR'], true)) {
+            return PaymentStatus::Failed;
+        }
+
+        if (in_array($operationResult, ['CANCELED', 'CANCELLED', 'VOIDED'], true)) {
+            return PaymentStatus::Cancelled;
+        }
+
+        if ($operationResult === 'REFUNDED') {
+            return PaymentStatus::Refunded;
+        }
+
         if (in_array($status, ['PENDING', 'CREATED', 'IN_PROGRESS'], true)) {
             return PaymentStatus::PendingCustomerAction;
         }
 
-        if (in_array($operationResult, ['DECLINED', 'DENIED', 'FAILED', 'ERROR'], true)) {
+        if (in_array($status, ['CANCELLED', 'CANCELED', 'VOIDED'], true)) {
+            return PaymentStatus::Cancelled;
+        }
+
+        if (in_array($status, ['FAILED', 'DECLINED', 'DENIED'], true)) {
             return PaymentStatus::Failed;
         }
 
-        if (in_array($status, ['CANCELLED', 'VOIDED'], true)) {
-            return PaymentStatus::Cancelled;
+        // A successful GET on an HPP order can legitimately return an order with no
+        // operation yet (for example when the customer abandoned the card page before
+        // authorization). If the local durable state is still waiting for the customer,
+        // keep that state instead of turning it into Unknown during reconciliation.
+        $contextStatus = self::contextStatus($context);
+        if (in_array($contextStatus, [
+            PaymentStatus::PendingRedirect,
+            PaymentStatus::PendingCustomerAction,
+        ], true)) {
+            return $contextStatus;
+        }
+
+        // An order/orderStatus object proves Nexi knows the HPP order even if no
+        // transaction operation exists yet. This is still an incomplete customer
+        // flow, not an unknown payment state. This also repairs rows that were
+        // previously downgraded to Unknown by the old mapper.
+        if (
+            isset($payload['order'])
+            || isset($payload['orderStatus'])
+            || (isset($payload['operations']) && is_array($payload['operations']) && $payload['operations'] === [])
+        ) {
+            return PaymentStatus::PendingCustomerAction;
         }
 
         return PaymentStatus::Unknown;
@@ -97,6 +154,21 @@ final class NexiStatusMapper
         $first = $operations[0] ?? [];
 
         return is_array($first) ? $first : [];
+    }
+
+    private static function contextStatus(array $context): ?PaymentStatus
+    {
+        $status = $context['status'] ?? $context['payment_status'] ?? null;
+
+        if ($status instanceof PaymentStatus) {
+            return $status;
+        }
+
+        if (is_string($status)) {
+            return PaymentStatus::tryFrom($status);
+        }
+
+        return null;
     }
 
     public static function fromNotificationType(?string $eventType): PaymentStatus
