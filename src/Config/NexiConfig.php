@@ -22,4 +22,15 @@ final class NexiConfig
             ? 'https://xpaysandbox.nexigroup.com/api/phoenix-0.0/psp/api/v1'
             : 'https://xpay.nexigroup.com/api/phoenix-0.0/psp/api/v1';
     }
+
+    /**
+     * Stable identifier persisted with the payment. It prevents a payment created
+     * against Nexi production from being reconciled accidentally through sandbox
+     * credentials (and vice versa), which is especially easy after copying a
+     * production database to local/dev.
+     */
+    public function environment(): string
+    {
+        return $this->sandbox ? 'sandbox' : 'production';
+    }
 }

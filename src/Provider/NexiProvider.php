@@ -92,6 +92,7 @@ final class NexiProvider implements PaymentProviderInterface
             message: $response['result'] ?? null,
             metadata: $this->filterMetadata([
                 'provider' => $this->code(),
+                'nexi_environment' => $this->config->environment(),
                 'provider_payment_id' => $request->merchantReference,
                 'order_id' => $request->merchantReference,
                 'nexi_order_id' => $request->merchantReference,
@@ -159,7 +160,10 @@ final class NexiProvider implements PaymentProviderInterface
             transactionIds: [],
             message: 'Nexi authorization is driven by checkout captureType in this provider.',
             raw: [],
-            metadata: ['provider' => $this->code()],
+            metadata: [
+                'provider' => $this->code(),
+                'nexi_environment' => $this->config->environment(),
+            ],
         );
     }
 
@@ -184,6 +188,7 @@ final class NexiProvider implements PaymentProviderInterface
             raw: $response,
             metadata: $this->filterMetadata([
                 'provider' => $this->code(),
+                'nexi_environment' => $this->config->environment(),
                 'operation_id' => $newOperationId ?? $operationId,
                 'nexi_operation_id' => $newOperationId ?? $operationId,
                 'nexi_capture_operation_id' => $newOperationId,
@@ -205,6 +210,7 @@ final class NexiProvider implements PaymentProviderInterface
                 message: 'Pagamento annullato dall’utente.',
                 metadata: $this->filterMetadata([
                     'provider' => $this->code(),
+                    'nexi_environment' => $this->config->environment(),
                     'order_id' => $orderId,
                     'nexi_order_id' => $orderId,
                     'nexi_cancel_local_only' => true,
@@ -234,6 +240,7 @@ final class NexiProvider implements PaymentProviderInterface
                 raw: $exception->responsePayload(),
                 metadata: $this->filterMetadata([
                     'provider' => $this->code(),
+                    'nexi_environment' => $this->config->environment(),
                     'operation_id' => $operationId,
                     'nexi_operation_id' => $operationId,
                     'nexi_cancel_missing_remote_operation' => true,
@@ -252,6 +259,7 @@ final class NexiProvider implements PaymentProviderInterface
             raw: $response,
             metadata: $this->filterMetadata([
                 'provider' => $this->code(),
+                'nexi_environment' => $this->config->environment(),
                 'operation_id' => $operationId,
                 'nexi_operation_id' => $operationId,
                 'nexi_cancel_operation_id' => $newOperationId,
@@ -280,6 +288,7 @@ final class NexiProvider implements PaymentProviderInterface
             raw: $response,
             metadata: $this->filterMetadata([
                 'provider' => $this->code(),
+                'nexi_environment' => $this->config->environment(),
                 'operation_id' => $operationId,
                 'nexi_operation_id' => $operationId,
                 'nexi_refund_operation_id' => $newOperationId,
@@ -289,6 +298,8 @@ final class NexiProvider implements PaymentProviderInterface
 
     public function sync(SyncRequest $request): SyncResult
     {
+        $this->assertEnvironmentMatches($request->metadata);
+
         $orderId = $request->metadata['nexi_order_id']
             ?? $request->metadata['order_id']
             ?? $request->providerPaymentId
@@ -426,6 +437,7 @@ final class NexiProvider implements PaymentProviderInterface
 
         return $this->filterMetadata([
             'provider' => $this->code(),
+            'nexi_environment' => $this->config->environment(),
             'provider_payment_id' => $mainOperationId ?? $orderId,
             'order_id' => $orderId,
             'nexi_order_id' => $orderId,
@@ -505,6 +517,38 @@ final class NexiProvider implements PaymentProviderInterface
         $data[8] = chr((ord($data[8]) & 0x3f) | 0x80);
 
         return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
+    }
+
+    /**
+     * Refuse cross-environment reconciliation when the payment records the Nexi
+     * environment it was created in. Historical rows without this marker remain
+     * synchronizable; a successful sync will add the marker for future checks.
+     */
+    private function assertEnvironmentMatches(array $metadata): void
+    {
+        $stored = $metadata['nexi_environment']
+            ?? $metadata['provider_environment']
+            ?? null;
+
+        if (!is_string($stored) || trim($stored) === '') {
+            return;
+        }
+
+        $stored = match (strtolower(trim($stored))) {
+            'prod', 'live' => 'production',
+            'test' => 'sandbox',
+            default => strtolower(trim($stored)),
+        };
+
+        $current = $this->config->environment();
+
+        if ($stored !== $current) {
+            throw new NexiConfigurationException(sprintf(
+                'Nexi environment mismatch: payment belongs to %s, current provider is %s.',
+                $stored,
+                $current,
+            ));
+        }
     }
 
     private function filterMetadata(array $metadata): array

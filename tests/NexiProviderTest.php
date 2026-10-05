@@ -3,10 +3,12 @@
 namespace DalPraS\Payment\Nexi\Tests;
 
 use DalPraS\Payment\Dto\CheckoutRequest;
+use DalPraS\Payment\Dto\SyncRequest;
 use DalPraS\Payment\Enum\Currency;
 use DalPraS\Payment\Enum\PaymentIntent;
 use DalPraS\Payment\Enum\PaymentStatus;
 use DalPraS\Payment\Nexi\Config\NexiConfig;
+use DalPraS\Payment\Nexi\Exception\NexiConfigurationException;
 use DalPraS\Payment\Nexi\Mapper\NexiOrderMapper;
 use DalPraS\Payment\Nexi\Provider\NexiProvider;
 use DalPraS\Payment\ValueObject\Address;
@@ -50,6 +52,58 @@ final class NexiProviderTest extends TestCase
         self::assertSame('2500', $client->lastCreatePayload['paymentSession']['amount']);
         self::assertSame('https://example.com/pay/return?orderId=merchant-1', $client->lastCreatePayload['paymentSession']['resultUrl']);
         self::assertSame('merchant-1', $response->metadata['nexi_order_id']);
+        self::assertSame('sandbox', $response->metadata['nexi_environment']);
+    }
+
+    public function testSyncRejectsPaymentFromDifferentNexiEnvironment(): void
+    {
+        $provider = new NexiProvider(
+            new NexiConfig('sandbox-key', true),
+            new FakeNexiHttpClient(),
+            new NexiOrderMapper(),
+        );
+
+        $this->expectException(NexiConfigurationException::class);
+        $this->expectExceptionMessage('payment belongs to production, current provider is sandbox');
+
+        $provider->sync(new SyncRequest(
+            providerCode: 'nexi',
+            paymentReference: 'payment-1',
+            providerPaymentId: 'merchant-1',
+            metadata: [
+                'nexi_order_id' => 'merchant-1',
+                'nexi_environment' => 'production',
+            ],
+        ));
+    }
+
+    public function testSyncAddsCurrentEnvironmentToLegacyPaymentMetadata(): void
+    {
+        $client = new FakeNexiHttpClient(
+            getOrderResponse: [
+                'order' => ['orderId' => 'merchant-1'],
+                'operations' => [],
+            ],
+        );
+
+        $provider = new NexiProvider(
+            new NexiConfig('sandbox-key', true),
+            $client,
+            new NexiOrderMapper(),
+        );
+
+        $result = $provider->sync(new SyncRequest(
+            providerCode: 'nexi',
+            paymentReference: 'payment-1',
+            providerPaymentId: 'merchant-1',
+            metadata: [
+                'nexi_order_id' => 'merchant-1',
+                'status' => PaymentStatus::PendingCustomerAction->value,
+            ],
+        ));
+
+        self::assertSame(PaymentStatus::PendingCustomerAction, $result->status);
+        self::assertSame('sandbox', $result->metadata['nexi_environment']);
     }
 
     public function testMapperUsesExplicitCaptureForDeferredCaptureIntents(): void
